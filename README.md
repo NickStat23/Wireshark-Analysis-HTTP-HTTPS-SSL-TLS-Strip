@@ -24,66 +24,93 @@ When I first opened `HTTP-password.pcap`, the packet list was full of TCP handsh
 
 ![Initial Import of Plaintext HTTP Capture](images/HTTP_Password_PCAP_Open.png)
 
-Filtering by `http` cleaned things up fast. Packet 70 jumped out right away, showing an outbound HTTP POST request hitting an administrative login page.
+Filtering by `http` cleaned things up fast. Packet 70 jumped out right away, a POST request hitting an admin login page.
 
 ![Isolating Packet 70 POST Request](images/Password_Packet.png)
 
-### Following the Stream
-To get a clean view of what was actually sent, I right clicked on Packet 70 and selected **Follow > HTTP Stream**. This brings up the whole conversation in a readable window rather than looking at raw individual packet data.
+### Following the HTTP Stream
+Right-clicking Packet 70 and selecting **Follow > HTTP Stream** let me read the entire conversation as one clean block instead of jumping between individual packets.
 
 ![Executing Follow HTTP Stream](images/HTTP_Follow.png)
 
-### Extracting the Credentials
-Because the site used plain HTTP without transport layer encryption, everything inside that stream window was readable.
+### What I Found
+Since the site was running plain HTTP with zero encryption, everything in the payload was sitting right there in cleartext:
 
 * **Client IP:** 192.168.56.1
 * **Server IP:** 192.168.56.101
-* **Target Path:** `/netgear/login/base/cheetah_login.html`
-* **Exfiltrated Password:** `pwd=GoodLuckTryingToCrackThisPassword1928364132874234916592364861329`
+* **Login Page:** `/netgear/login/base/cheetah_login.html`
+* **Exposed Password:** `pwd=GoodLuckTryingToCrackThisPassword1928364132874234916592364861329`
 
 ![Extracted Cleartext Administrative Password](images/HTTP_PasswordPacket_FollowHTTP.png)
 
-> **Takeaway:** This really drives home the point that password complexity does not save you if your transport layer is insecure. The user set a massive 63 character password, but it took two clicks to grab it in cleartext because the connection was unencrypted.
+> **Takeaway:** The user had a 63-character password. Didn't matter at all. Without TLS, anyone on the network path can read the payload like a text file. Password complexity is useless if the transport layer isn't encrypted.
 
 ---
 
-## Phase 2: Post Incident Forensic TLS Decryption
+## Phase 2: Decrypting a TLS Session with a Leaked Private Key
 
-### The Encryption Wall
-For the next phase, I grabbed `SSL-decryption.pcap` from the workshop files to look at encrypted traffic.
+### The Problem: Everything is Encrypted
+For this phase I loaded `SSL-decryption.pcap`. 
 
 ![Downloading Secure TLS Capture File](images/SSL-TLS_STRIP_PCAP_Download.png)
 
-When I opened this file, the application layer data was completely unreadable. Because a secure TLS 1.2 session was established, Wireshark just showed generic application data records. If you try to follow this stream before adding a key, you get nothing but blank or encrypted blocks.
+When I first opened this pcap, all application traffic was hidden inside secure protocols.
+
+![Opening Encrypted Capture File](images/SSL_PCAPFile.png)
+
+The session had successfully negotiated TLS 1.2, so Wireshark was only showing encrypted records. Following the TLS stream gave me nothing, just binary garbage.
 
 ![Encrypted TLS Records Prior to Key Ingestion](images/SSL_STRIP_Before_Applying_Key.png)
 
-### Adding the Server Private Key
-To inspect the underlying traffic, I needed to grab the pre-shared server private key file (`server.pem`) hosted in the same repo.
+### Loading the Private Key
+The workshop repo also included `server.pem`, the server's private key. In a real incident this would be the scenario where an attacker got hold of the key through a breach or misconfiguration.
 
 ![Reviewing Server Private Key Block](images/SSL-Server_PEM_Key.png)
 
-I went into Wireshark preferences by navigating to **Edit > Preferences > Protocols > TLS**. In the **RSA keys list** menu, I added a new entry, mapped it to port 443, and browsed to where I saved the local copy of `server.pem`.
+I went to **Edit > Preferences > Protocols > TLS** and added the key to the RSA keys list, mapping it to port 443.
 
 ![Configuring RSA Keys List Parameters](images/SSL_STRIP_KEY_ADD.png)
 
-Once I hit apply, Wireshark updated its rules to use this key block to decrypt matching sessions on the fly.
-
 ![Verifying Successful Ingestion of server.pem](images/SSL_STRIP_KEY_ADDED.png)
 
-### Reading the Decrypted Streams
-The second the key was applied, Wireshark re-computed the capture file and successfully unwrapped the TLS layer. A whole row of plaintext HTTP packets appeared where the generic TLS records used to be.
+### The Decryption
+Once the key was loaded, Wireshark re-evaluated the whole capture. The TLS records flipped over to readable HTTP packets instantly.
 
 ![Post Decryption Packet List Exposure](images/SSL_Strip_Open_PCAP.png)
 
-Filtering for `http` brought up Packet 29. Right clicking that packet and choosing **Follow > HTTP Stream** opened up the plaintext conversation that was previously hidden.
+Filtering for `http` and following the stream on Packet 29 revealed everything.
 
 ![Launching Decrypted Stream Viewer](images/SSL_STRIP_Success.png)
 
-### Analyzing the OpenSSL Diagnostics
-Looking at the decrypted stream showed that this wasn't a standard web server conversation. It was actually a diagnostic dump from an OpenSSL testing daemon (`s_server`). The output exposed deep session details:
+### What the Decrypted Traffic Showed
+The server was running an OpenSSL test daemon. The decrypted stream exposed:
 
-* **Target Daemon Command:** `s_server -www -cipher AES256-SHA -key server.pem -cert server.crt -accept 443`
-* **Negotiated Protocol State:** TLS v1.2
-* **Cipher Suite Enforced:** AES256-SHA
-* **Derived Session Master Key:** `A0EFF65B633854E386FADA958A8B14B5353E06C3EC6BD55345B363DC
+* **Server Process:** `s_server -www -cipher AES256-SHA -key server.pem -cert server.crt -accept 443`
+* **TLS Version:** TLS 1.2
+* **Cipher Suite:** AES256-SHA
+* **Session Master Key:** `A0EFF65B633854E386FADA958A8B14B5353E06C3EC6BD55345B363DC1E9777343438175D7949D59409EA884BAF55DAFA`
+
+![Analyzing Decrypted OpenSSL Status Page](images/SSL_STRIP_Success_Following.png)
+
+> **Takeaway:** This is why private key security matters so much. If that key gets out, it doesn't matter how strong your encryption is; the whole session can be unwrapped retroactively. Forward secrecy (like ECDHE cipher suites) exists specifically to prevent this, since each session generates its own ephemeral keys that aren't stored anywhere.
+
+---
+
+## Recommendations
+
+1. **Kill cleartext protocols:** HTTP, Telnet, FTP should not exist on any production infrastructure. TLS 1.3 minimum across the board.
+2. **Enforce HSTS:** Adding HTTP Strict Transport Security headers forces browsers to always connect over HTTPS, blocking any downgrade attempts before the request even goes out.
+3. **Protect and rotate private keys:** Restrict access to `.pem` files with strict permissions, audit who touches them, and rotate on a schedule. A leaked key compromises every past session that wasn't using forward secrecy.
+4. **Use forward secrecy cipher suites:** ECDHE-based ciphers mean even if the private key leaks later, past sessions can't be decrypted. This phase demonstrated exactly why that matters.
+
+---
+
+## Disclaimer
+All analysis was performed using publicly available, non-production training files from an open educational repository. This project is for academic and portfolio purposes only.
+
+---
+
+## 🙋 Author
+
+**Nick Efstathiou,** Cybersecurity | Network Engineering | Home Lab  
+[LinkedIn](https://www.linkedin.com/in/NickStat23)
