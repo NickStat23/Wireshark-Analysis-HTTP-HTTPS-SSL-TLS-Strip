@@ -39,7 +39,7 @@ Since the site was running plain HTTP with zero encryption, everything in the pa
 * **Client IP:** 192.168.56.1
 * **Server IP:** 192.168.56.101
 * **Login Page:** `/netgear/login/base/cheetah_login.html`
-* **Exposed Password:** `pwd=GoodLuckTryingToCrackThisPassword1928364132874234916592364861329`
+* **Exposed Password:** `GoodLuckTryingToCrackThisPassword1928364132874234916592364861329`
 
 ![Extracted Cleartext Administrative Password](images/HTTP_PasswordPacket_FollowHTTP.png)
 
