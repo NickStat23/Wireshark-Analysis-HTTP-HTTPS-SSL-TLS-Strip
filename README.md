@@ -31,7 +31,7 @@ Filtering by `http` cleaned things up fast. Packet 70 jumped out right away, a P
 ### Following the HTTP Stream
 Right-clicking Packet 70 and selecting **Follow > HTTP Stream** let me read the entire conversation as one clean block instead of jumping between individual packets.
 
-![Executing Follow HTTP Stream](images/HTTP_Follow.png)
+![Executing Follow HTTP Stream](images/HTTP_Follow1.png)
 
 ### What I Found
 Since the site was running plain HTTP with zero encryption, everything in the payload was sitting right there in cleartext:
